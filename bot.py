@@ -309,13 +309,50 @@ async def start_http_server(port: int):
     await site.start()
     logging.info(f"✅ Keep-alive server on :{port}")
 
+# ... (весь предыдущий код остаётся без изменений) ...
+
+# ================= ОБРАБОТЧИК СИГНАЛОВ (Graceful Shutdown) =================
+import signal
+import sys
+
+def handle_shutdown(signum, frame):
+    logging.info(f"🛑 Received signal {signum}, stopping gracefully...")
+    asyncio.create_task(bot.close())
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_shutdown)
+signal.signal(signal.SIGINT, handle_shutdown)
+
 # ================= ЗАПУСК =================
 async def main():
+    # 1. Очищаем состояние у Telegram (убивает "призрачные" сессии)
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("✅ Webhook cleared, old connections terminated")
+    except Exception as e:
+        logging.warning(f"⚠️ Could not clear webhook: {e}")
+
+    # 2. Инициализируем БД
     await init_db()
-    port = int(os.getenv("PORT", 8080))
+    
+    # 3. Запускаем HTTP-сервер для крона
+    port = int(os.getenv("PORT", 10000))  # Render использует 10000
     await start_http_server(port)
-    logging.info("🚀 Bot polling started...")
-    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+    
+    # 4. Небольшая пауза, чтобы старый процесс точно умер (0.5 сек)
+    await asyncio.sleep(0.5)
+    
+    # 5. Запускаем поллинг с явным указанием, какие обновления слушать
+    logging.info("🚀 Bot polling starting...")
+    await dp.start_polling(
+        bot,
+        allowed_updates=dp.resolve_used_update_types()  # Только нужные события
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("👋 Bot stopped by user")
+    finally:
+        asyncio.run(bot.close())
